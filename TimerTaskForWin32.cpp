@@ -23,13 +23,17 @@
 #define WBTOUTF8 L"w, ccs=utf-8"
 #define TIMER_TASK 2001
 #define TIMER_SHOWWINDOW 2002
+#define WM_SHOWTASK 0x0401
+#define MENU_EXIT 0x100
 
-#ifdef _DEBUG
-#define IsRelease FALSE
-#else
-#define IsRelease TRUE
-#endif // _DEBUG
+//#ifdef _DEBUG
+//#define IsRelease FALSE
+//#else
+//#define IsRelease TRUE
+//#endif // _DEBUG
 
+// 程序名称
+wchar_t fileName[_MAX_FNAME] = { 0 };
 // 配置文件路径
 wchar_t szCfgPath[MAX_PATH] = { 0 };
 
@@ -46,6 +50,10 @@ SYSTEMTIME st;
 
 OPENFILENAME ofn = { 0 };
 
+HINSTANCE hIns = NULL;
+
+HMENU hMenu = NULL;
+
 void CALLBACK SetTimerShowWindow(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime);
 void CALLBACK TimerProc(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime);
 void DtnDatetimechange(HWND hDlg, int nIDDlgItem);
@@ -58,6 +66,15 @@ BOOL IsMutex();
 void CALLBACK SetTimerShowWindow(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
 {
     //KillTimer(hDlg, nIDEvent);
+    NOTIFYICONDATA nid;
+    nid.cbSize = sizeof(NOTIFYICONDATA);
+    nid.hWnd = hDlg;
+    nid.uID = IDI_ICON;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_SHOWTASK;
+    nid.hIcon = LoadIconW(hIns, MAKEINTRESOURCE(IDI_ICON));
+    wcscpy_s(nid.szTip, fileName);
+    Shell_NotifyIcon(NIM_ADD, &nid);
     ShowWindow(hDlg, SW_HIDE);
 }
 
@@ -99,7 +116,7 @@ void CALLBACK TimerProc(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
     }
     else
     {
-        ShellExecuteW(hDlg, L"open", szTaskFilePath, NULL, NULL, SW_SHOWDEFAULT);
+        ShellExecuteW(hDlg, L"open", szTaskFilePath, NULL, NULL, SW_HIDE);
     }
 }
 
@@ -336,8 +353,7 @@ BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode)
                 }
                 else
                 {
-                    wcscpy_s(szTaskFilePath, NULL);
-                    //DeleteFileW(szCfgPath);
+                    wcscpy_s(szTaskFilePath, L"");
                 }
             }
             if (0 == wcscmp(_Mode, WBTOUTF8))
@@ -501,9 +517,23 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
             break;
         }
         break;
+    case WM_SHOWTASK:
+        if (lParam == WM_RBUTTONUP)
+        {
+            POINT point;
+            GetCursorPos(&point);
+            hMenu = CreatePopupMenu();
+            AppendMenuW(hMenu, MF_STRING | MF_ENABLED, MENU_EXIT, L"退出(&Q)");
+            TrackPopupMenu(hMenu, TPM_LEFTALIGN, point.x, point.y, 0, hDlg, NULL);
+        }
+        break;
     case WM_COMMAND:
         switch (wParam)
         {
+        case MENU_EXIT:
+            DestroyMenu(hMenu);
+            DestroyWindow(hDlg);
+            break;
         case IDC_BTN_SELECT:
             ofn = { NULL };
             ofn.lStructSize = sizeof(ofn);
@@ -630,7 +660,6 @@ BOOL IsMutex()
     wchar_t szFilePath[MAX_PATH] = { 0 };
     GetModuleFileNameW(NULL, szFilePath, MAX_PATH);
 
-    wchar_t fileName[_MAX_FNAME] = { 0 };
     // 分割程序完整路径得到程序名称
     _wsplitpath_s(szFilePath, NULL, NULL, NULL, NULL, fileName, _MAX_FNAME, NULL, NULL);
     // 给进程实例加锁
@@ -671,7 +700,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     // 获取对话框句柄
     HWND hWnd = NULL;
-
+    hIns = hInstance;
     // 创建对话框窗口
     DialogBoxParamW(hInstance, MAKEINTRESOURCEW(IDD_DLG_TIMERTASK), hWnd, DialogProc, 0L);
 
