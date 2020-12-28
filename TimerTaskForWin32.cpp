@@ -4,6 +4,7 @@
 #include <CommCtrl.h>
 #include <iostream>
 #include <time.h>
+#include <tlhelp32.h>
 
 #include "resource.h"
 
@@ -24,7 +25,7 @@
 #define TIMER_TASK 2001
 #define TIMER_SHOWWINDOW 2002
 #define WM_SHOWTASK 0x0401
-#define MENU_EXIT 0x100
+#define SECOND 1000                                 // 定时器秒数
 
 //#ifdef _DEBUG
 //#define IsRelease FALSE
@@ -34,6 +35,7 @@
 
 // 程序名称
 wchar_t fileName[_MAX_FNAME] = { 0 };
+
 // 配置文件路径
 wchar_t szCfgPath[MAX_PATH] = { 0 };
 
@@ -41,82 +43,282 @@ wchar_t szCfgPath[MAX_PATH] = { 0 };
 wchar_t szTaskFilePath[MAX_PATH] = { 0 };
 
 // 配置文件属性前缀
-wchar_t cfgs[][MAXCHAR] = { L"TaskPath=",L"RadioButton=",L"SUNDAY=",L"MONDAY=",L"TUESDAY=",L"WEDNESDAY=",L"THURSDAY=",L"FRIDAY=",L"SATURDAY=" };
+wchar_t cfgs[][MAXCHAR] = { L"TaskPath=",L"RadioButton=",L"SUNDAY=",L"MONDAY=",L"TUESDAY=",L"WEDNESDAY=",L"THURSDAY=",L"FRIDAY=",L"SATURDAY=",L"STARTTIME=",L"ENDTIME=" };
 
 // 计时器时长(秒)
 const unsigned int Second = 1000;
 
+// 系统时间
 SYSTEMTIME st;
 
+// 文件选择对话框
 OPENFILENAME ofn = { 0 };
 
+// 实例句柄
 HINSTANCE hIns = NULL;
 
+// 菜单列表
 HMENU hMenu = NULL;
 
+// 托盘图标
+NOTIFYICONDATA nid;
+
+void CfgTimeToSystemTime(HWND hDlg, int nIDDlgItem, wchar_t* wstr);
+void CkCheckToCfg(HWND hDlg, int nIDDlgItem, wchar_t*& rewstr, int rewLen = 20);
+void SystemTimeToWcs(HWND hDlg, int nIDDlgItem, wchar_t*& wstr, int wcs_Size);
 void CALLBACK SetTimerShowWindow(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime);
 void CALLBACK TimerProc(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime);
-void DtnDatetimechange(HWND hDlg, int nIDDlgItem);
+void SetBtnCheck(HWND hDlg, int nIDDlgItem);
+void DtnDateTimeChange(HWND hDlg, int nIDDlgItem);
 void ParseCfg(HWND hDlg, size_t index, const wchar_t* szCfgContent);
 BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode);
 void InitDialog(HWND hDlg);
 INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 BOOL IsMutex();
 
+/// <summary>
+/// 配置文件时间转SystemTime
+/// </summary>
+/// <param name="hDlg">窗口句柄</param>
+/// <param name="nIDDlgItem">控件ID</param>
+/// <param name="wstr">时间字符串</param>
+void CfgTimeToSystemTime(HWND hDlg, int nIDDlgItem, wchar_t* wstr)
+{
+    wchar_t* tmp = wcstok_s(wstr, L":", &wstr);
+    st.wHour = _wtoi(tmp);
+    tmp = wcstok_s(wstr, L":", &wstr);
+    st.wMinute = _wtoi(tmp);
+    if (wstr)
+    {
+        st.wSecond = _wtoi(wstr);
+    }
+    HWND hWnd = GetDlgItem(hDlg, nIDDlgItem);
+    SendMessageW(hWnd, DTM_SETSYSTEMTIME, 0, (LPARAM)&st);
+}
+
+/// <summary>
+/// 多选按钮选择状态保存到Cfg文件
+/// </summary>
+/// <param name="hDlg">窗口句柄</param>
+/// <param name="nIDDlgItem">多选按钮ID</param>
+/// <param name="rewstr">Cfg字符串</param>
+/// <param name="rewLen">字符串长度(默认为20)</param>
+void CkCheckToCfg(HWND hDlg, int nIDDlgItem, wchar_t*& rewstr, int rewLen)
+{
+    int len = sizeof(int) + 1;
+    wchar_t* wstr = new wchar_t[len];
+    HWND hWnd = GetDlgItem(hDlg, nIDDlgItem);
+    int day = SendMessageW(hWnd, BM_GETCHECK, 0, 0);
+    _itow_s(day, wstr, len, 10);
+    switch (nIDDlgItem)
+    {
+    case IDC_CK_SUNDAY:
+        wcscpy_s(rewstr, rewLen, L"\nSUNDAY=");
+        break;
+    case IDC_CK_MONDAY:
+        wcscpy_s(rewstr, rewLen, L"\nMONDAY=");
+        break;
+    case IDC_CK_TUESDAY:
+        wcscpy_s(rewstr, rewLen, L"\nTUESDAY=");
+        break;
+    case IDC_CK_WEDNESDAY:
+        wcscpy_s(rewstr, rewLen, L"\nWEDNESDAY=");
+        break;
+    case IDC_CK_THURSDAY:
+        wcscpy_s(rewstr, rewLen, L"\nTHURSDAY=");
+        break;
+    case IDC_CK_FRIDAY:
+        wcscpy_s(rewstr, rewLen, L"\nFRIDAY=");
+        break;
+    case IDC_CK_SATURDAY:
+        wcscpy_s(rewstr, rewLen, L"\nSATURDAY=");
+        break;
+    default:
+        break;
+    }
+    wcscat_s(rewstr, rewLen, wstr);
+}
+
+/// <summary>
+/// SystemTime写入配置文件
+/// </summary>
+/// <param name="hDlg">窗口句柄</param>
+/// <param name="nIDDlgItem">控件ID</param>
+/// <param name="wstr">时间字符串</param>
+/// <param name="wcs_Size">字符串长度</param>
+void SystemTimeToWcs(HWND hDlg, int nIDDlgItem, wchar_t*& wstr, int wcs_Size)
+{
+    SendMessageW(GetDlgItem(hDlg, nIDDlgItem), DTM_GETSYSTEMTIME, 0, (LPARAM)&st);
+    wchar_t hour[3] = { 0 };
+    _itow_s((int)st.wHour, hour, 3, 10);
+    wcscpy_s(wstr, wcs_Size, hour);
+    wcscat_s(wstr, wcs_Size, L":");
+    wchar_t minute[3] = { 0 };
+    _itow_s((int)st.wMinute, minute, 3, 10);
+    wcscat_s(wstr, wcs_Size, minute);
+    wcscat_s(wstr, wcs_Size, L":");
+    wchar_t second[3] = { 0 };
+    _itow_s((int)st.wSecond, second, 3, 10);
+    wcscat_s(wstr, wcs_Size, second);
+}
+
+/// <summary>
+/// 用定时器隐藏窗口
+/// </summary>
+/// <param name="hDlg">窗口句柄</param>
+/// <param name="uMsg">消息内容</param>
+/// <param name="nIDEvent">定时器ID</param>
+/// <param name="dwTime">定时器时长</param>
 void CALLBACK SetTimerShowWindow(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
 {
-    //KillTimer(hDlg, nIDEvent);
-    NOTIFYICONDATA nid;
-    nid.cbSize = sizeof(NOTIFYICONDATA);
-    nid.hWnd = hDlg;
-    nid.uID = IDI_ICON;
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage = WM_SHOWTASK;
-    nid.hIcon = LoadIconW(hIns, MAKEINTRESOURCE(IDI_ICON));
-    wcscpy_s(nid.szTip, fileName);
-    Shell_NotifyIcon(NIM_ADD, &nid);
     ShowWindow(hDlg, SW_HIDE);
 }
 
 /// <summary>
+/// 检测任务是否在可执行时间内
 /// 定时器回调函数
 /// </summary>
-/// <param name="hDlg"></param>
-/// <param name="uMsg"></param>
-/// <param name="nIDEvent"></param>
-/// <param name="dwTime"></param>
+/// <param name="hDlg">窗口句柄</param>
+/// <param name="uMsg">消息内容</param>
+/// <param name="nIDEvent">定时器ID</param>
+/// <param name="dwTime">定时器时长</param>
 void CALLBACK TimerProc(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
 {
-    SYSTEMTIME st_end;
+    SYSTEMTIME st_start, st_end;
     HWND hWnd = GetDlgItem(hDlg, IDC_DTP_END);
+    SendMessageW(hWnd, DTM_GETSYSTEMTIME, GDT_VALID, (LPARAM)&st_start);
     SendMessageW(hWnd, DTM_GETSYSTEMTIME, GDT_VALID, (LPARAM)&st_end);
-    time_t _end, _now;
+    time_t _start, _end, _now;
     time(&_now);
+    tm _stm = { st_start.wSecond,st_start.wMinute,st_start.wHour,st_start.wDay,st_start.wMonth - 1,st_start.wYear - 1900,st_start.wDayOfWeek,0,0 };
     tm _etm = { st_end.wSecond,st_end.wMinute,st_end.wHour,st_end.wDay,st_end.wMonth - 1,st_end.wYear - 1900,st_end.wDayOfWeek,0,0 };
+    _start = mktime(&_stm);
     _end = mktime(&_etm);
 
-    hWnd = FindWindowW(L"#32770", L"飞秋(FeiQ)---局域网即时通讯");
-    if (hWnd)
+    //查找进程
+    PROCESSENTRY32 ps;
+    HANDLE handle;
+    ps.dwSize = sizeof(PROCESSENTRY32);
+    // 遍历进程 
+    handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (handle == INVALID_HANDLE_VALUE)
+        return;
+    if (Process32First(handle, &ps))
     {
-        if (0 <= difftime(_now, _end))
+        wchar_t* szExeFile = new wchar_t[_MAX_FNAME];
+        _wsplitpath_s(szTaskFilePath, NULL, NULL, NULL, NULL, szExeFile, _MAX_FNAME, NULL, NULL);
+        wcscat_s(szExeFile, _MAX_FNAME, L".exe");
+        //遍历进程快照
+        while (Process32Next(handle, &ps))
         {
-            //停止定时器
-            KillTimer(hDlg, TIMER_TASK);
-            //进程ID
-            unsigned long lpProcessId = 0UL;
-            //根据窗口句柄得到PID
-            GetWindowThreadProcessId(hWnd, &lpProcessId);
-            //根据PID打开进程
-            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE, 0, lpProcessId);
-            //结束进程
-            TerminateProcess(hProcess, 0);
-            //销毁窗口
-            DestroyWindow(hDlg);
+            if (0 == wcscmp(ps.szExeFile, szExeFile))
+            {
+                if (0 >= difftime(_now, _start) || 0 <= difftime(_now, _end))
+                {
+                    //停止定时器
+                    KillTimer(hDlg, TIMER_TASK);
+                    //关闭进程快照
+                    CloseHandle(handle);
+                    //根据PID打开进程
+                    handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE, 0, ps.th32ProcessID);
+                    //结束进程
+                    TerminateProcess(handle, EXIT_SUCCESS);
+                    SendMessageW(hDlg, WM_COMMAND, IDCANCEL, NULL);
+                }
+                return;
+            }
         }
-    }
-    else
-    {
         ShellExecuteW(hDlg, L"open", szTaskFilePath, NULL, NULL, SW_HIDE);
+    }
+}
+
+/// <summary>
+/// 设置按钮选择状态
+/// </summary>
+/// <param name="hDlg">窗口句柄</param>
+/// <param name="nIDDlgItem">按钮ID</param>
+void SetBtnCheck(HWND hDlg, int nIDDlgItem)
+{
+    switch (nIDDlgItem)
+    {
+    case IDC_RD_EVERYDAY:
+        CheckDlgButton(hDlg, IDC_RD_EVERYDAY, TRUE);
+
+        CheckDlgButton(hDlg, IDC_CK_SUNDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_MONDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_TUESDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_THURSDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_FRIDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_SATURDAY, TRUE);
+
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), FALSE);
+        break;
+    case IDC_RD_WORKINGDAY:
+        CheckDlgButton(hDlg, IDC_RD_WORKINGDAY, TRUE);
+
+        CheckDlgButton(hDlg, IDC_CK_SUNDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_MONDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_TUESDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_THURSDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_FRIDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_SATURDAY, FALSE);
+
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), TRUE);
+        break;
+    case IDC_RD_WEEKEND:
+        CheckDlgButton(hDlg, IDC_RD_WEEKEND, TRUE);
+
+        CheckDlgButton(hDlg, IDC_CK_SUNDAY, TRUE);
+        CheckDlgButton(hDlg, IDC_CK_MONDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_TUESDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_THURSDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_FRIDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_SATURDAY, TRUE);
+
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), FALSE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), FALSE);
+        break;
+    case IDC_RD_CUST:
+        CheckDlgButton(hDlg, IDC_RD_CUST, TRUE);
+
+        CheckDlgButton(hDlg, IDC_CK_SUNDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_MONDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_TUESDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_THURSDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_FRIDAY, FALSE);
+        CheckDlgButton(hDlg, IDC_CK_SATURDAY, FALSE);
+
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), TRUE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), TRUE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), TRUE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), TRUE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), TRUE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), TRUE);
+        EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), TRUE);
+        break;
+    default:
+        break;
     }
 }
 
@@ -125,7 +327,7 @@ void CALLBACK TimerProc(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
 /// </summary>
 /// <param name="hDlg">父窗口句柄</param>
 /// <param name="nIDDlgItem">控件ID</param>
-void DtnDatetimechange(HWND hDlg, int nIDDlgItem)
+void DtnDateTimeChange(HWND hDlg, int nIDDlgItem)
 {
     HWND hWnd = GetDlgItem(hDlg, nIDDlgItem);
     SendMessageW(hWnd, DTM_GETSYSTEMTIME, GDT_VALID, (LPARAM)&st);
@@ -205,96 +407,38 @@ void ParseCfg(HWND hDlg, size_t index, const wchar_t* szCfgContent)
     {
         wcscpy_s(str, wcstok_s(str, L"=", &tmp));
     }
+    int value = _wtoi(str);
     switch (index)
     {
     case 1:
-        if (0 == wcscmp(str, L"EVERYDAY"))
-        {
-            CheckDlgButton(hDlg, IDC_RD_EVERYDAY, TRUE);
-        }
-        if (0 == wcscmp(str, L"WORKINGDAY"))
-        {
-            CheckDlgButton(hDlg, IDC_RD_WORKINGDAY, TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), TRUE);
-        }
-        if (0 == wcscmp(str, L"WEEKEND"))
-        {
-            CheckDlgButton(hDlg, IDC_RD_WEEKEND, TRUE);
-        }
-        if (0 == wcscmp(str, L"CUST"))
-        {
-            CheckDlgButton(hDlg, IDC_RD_CUST, TRUE);
-        }
+        SetBtnCheck(hDlg, value);
         break;
     case 2:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_SUNDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_SUNDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_SUNDAY, value);
         break;
     case 3:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_MONDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_MONDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_MONDAY, value);
         break;
     case 4:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_TUESDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_TUESDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_TUESDAY, value);
         break;
     case 5:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, value);
         break;
     case 6:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_THURSDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_THURSDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_THURSDAY, value);
         break;
     case 7:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_FRIDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_FRIDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_FRIDAY, value);
         break;
     case 8:
-        if (0 == wcscmp(str, L"1"))
-        {
-            CheckDlgButton(hDlg, IDC_CK_SATURDAY, TRUE);
-        }
-        else
-        {
-            CheckDlgButton(hDlg, IDC_CK_SATURDAY, FALSE);
-        }
+        CheckDlgButton(hDlg, IDC_CK_SATURDAY, value);
+        break;
+    case 9:
+        CfgTimeToSystemTime(hDlg, IDC_DTP_START, str);
+        break;
+    case 10:
+        CfgTimeToSystemTime(hDlg, IDC_DTP_END, str);
         break;
     default:
         wcscpy_s(szTaskFilePath, str);
@@ -317,10 +461,8 @@ BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode)
         _wfopen_s(&fp, _FileName, _Mode);
         if (fp)
         {
-
             // 配置文件内容
             wchar_t szCfgContent[MAX_WCHAR] = { 0 };
-
             if (0 == wcscmp(_Mode, RBTOUTF8))
             {
                 //获取文件大小
@@ -336,102 +478,82 @@ BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode)
                 fread(szCfgContent, sizeof(wchar_t), reslen, fp);
                 fflush(fp);
                 fclose(fp);
-
-                for (size_t i = 0; i < wcslen(*cfgs); i++)
+                unsigned int cfgsLen = sizeof(cfgs) / sizeof(cfgs[0]);
+                for (size_t i = 0; i < cfgsLen; i++)
                 {
                     ParseCfg(hDlg, i, szCfgContent);
                 }
+                SetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath);
 
                 wchar_t lpszText[MAXCHAR] = L"确定执行:";
                 wcscat_s(lpszText, szTaskFilePath);
-                int uType = MessageBoxW(hDlg, lpszText, L"提示", MB_YESNO);
+                int uType = MessageBoxW(NULL, lpszText, L"提示", MB_YESNO);
                 if (IDYES == uType)
                 {
-                    SetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath);
                     EnableWindow(GetDlgItem(hDlg, IDC_BTN_SELECT), FALSE);
                     SendMessageW(hDlg, WM_COMMAND, IDOK, 0);
                 }
                 else
                 {
-                    wcscpy_s(szTaskFilePath, L"");
+                    SetDlgItemTextW(hDlg, IDC_TXT_PATH, L"");
                 }
             }
             if (0 == wcscmp(_Mode, WBTOUTF8))
             {
                 wcscpy_s(szCfgContent, L"TaskPath=");
                 wcscat_s(szCfgContent, szTaskFilePath);
+                int len = sizeof(int) + 1;
+                wchar_t* wstr = new wchar_t[len];
+                wcscpy_s(wstr, len, L"");
+                wcscat_s(szCfgContent, L"\nRadioButton=");
                 if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_RD_EVERYDAY), BM_GETCHECK, 0, 0))
                 {
-                    wcscat_s(szCfgContent, L"\nRadioButton=EVERYDAY");
+                    _itow_s(IDC_RD_EVERYDAY, wstr, len, 10);
                 }
                 if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_RD_WORKINGDAY), BM_GETCHECK, 0, 0))
                 {
-                    wcscat_s(szCfgContent, L"\nRadioButton=WORKINGDAY");
+                    _itow_s(IDC_RD_WORKINGDAY, wstr, len, 10);
                 }
                 if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_RD_WEEKEND), BM_GETCHECK, 0, 0))
                 {
-                    wcscat_s(szCfgContent, L"\nRadioButton=WEEKEND");
+                    _itow_s(IDC_RD_WEEKEND, wstr, len, 10);
                 }
                 if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_RD_CUST), BM_GETCHECK, 0, 0))
                 {
-                    wcscat_s(szCfgContent, L"\nRadioButton=CUST");
+                    _itow_s(IDC_RD_CUST, wstr, len, 10);
                 }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_SUNDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nSUNDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nSUNDAY=0");
-                }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_MONDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nMONDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nMONDAY=0");
-                }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_TUESDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nTUESDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nTUESDAY=0");
-                }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nWEDNESDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nWEDNESDAY=0");
-                }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_THURSDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nTHURSDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nTHURSDAY=0");
-                }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_FRIDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nFRIDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nFRIDAY=0");
-                }
-                if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_CK_SATURDAY), BM_GETCHECK, 0, 0))
-                {
-                    wcscat_s(szCfgContent, L"\nSATURDAY=1");
-                }
-                else
-                {
-                    wcscat_s(szCfgContent, L"\nSATURDAY=0");
-                }
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_SUNDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_MONDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_TUESDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_WEDNESDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_THURSDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_FRIDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                CkCheckToCfg(hDlg, IDC_CK_SATURDAY, wstr);
+                wcscat_s(szCfgContent, wstr);
+
+                int stlen = sizeof(SYSTEMTIME);
+                wchar_t* wcsTime = new wchar_t[stlen];
+                SystemTimeToWcs(hDlg, IDC_DTP_START, wcsTime, stlen);
+                wcscat_s(szCfgContent, L"\nSTARTTIME=");
+                wcscat_s(szCfgContent, wcsTime);
+                SystemTimeToWcs(hDlg, IDC_DTP_END, wcsTime, stlen);
+                wcscat_s(szCfgContent, L"\nENDTIME=");
+                wcscat_s(szCfgContent, wcsTime);
+
                 fseek(fp, 0, SEEK_SET);
                 fwrite(szCfgContent, sizeof(wchar_t), wcslen(szCfgContent), fp);
                 fflush(fp);
@@ -442,19 +564,12 @@ BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode)
             fclose(fp);
             return TRUE;
         }
-        CheckDlgButton(hDlg, IDC_RD_WORKINGDAY, TRUE);
-
-        CheckDlgButton(hDlg, IDC_CK_MONDAY, TRUE);
-        CheckDlgButton(hDlg, IDC_CK_TUESDAY, TRUE);
-        CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, TRUE);
-        CheckDlgButton(hDlg, IDC_CK_THURSDAY, TRUE);
-        CheckDlgButton(hDlg, IDC_CK_FRIDAY, TRUE);
-        EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), TRUE);
+        SetBtnCheck(hDlg, IDC_RD_WORKINGDAY);
         return FALSE;
     }
     catch (const wchar_t* error)
     {
-        MessageBoxW(hDlg, error, L"提示", MB_OK);
+        MessageBoxW(NULL, error, L"提示", MB_OK);
         return FALSE;
     }
 }
@@ -508,10 +623,10 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
         switch (wParam)
         {
         case IDC_DTP_START:
-            DtnDatetimechange(hDlg, IDC_DTP_START);
+            DtnDateTimeChange(hDlg, IDC_DTP_START);
             break;
         case IDC_DTP_END:
-            DtnDatetimechange(hDlg, IDC_DTP_END);
+            DtnDateTimeChange(hDlg, IDC_DTP_END);
             break;
         default:
             break;
@@ -523,22 +638,19 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
             POINT point;
             GetCursorPos(&point);
             hMenu = CreatePopupMenu();
-            AppendMenuW(hMenu, MF_STRING | MF_ENABLED, MENU_EXIT, L"退出(&Q)");
+            AppendMenuW(hMenu, MF_STRING | MF_ENABLED, IDCANCEL, L"退出(&Q)");
             TrackPopupMenu(hMenu, TPM_LEFTALIGN, point.x, point.y, 0, hDlg, NULL);
         }
         break;
     case WM_COMMAND:
+        SetBtnCheck(hDlg, wParam);
         switch (wParam)
         {
-        case MENU_EXIT:
-            DestroyMenu(hMenu);
-            DestroyWindow(hDlg);
-            break;
         case IDC_BTN_SELECT:
             ofn = { NULL };
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hDlg;
-            ofn.lpstrFilter = L"应用程序(.exe)\0*.exe\0";
+            ofn.lpstrFilter = L"应用程序\0*.exe\0";
             ofn.lpstrInitialDir = L"D:\\Program Files\\";
             ofn.lpstrFile = szTaskFilePath;
             ofn.nMaxFile = sizeof(szTaskFilePath) / sizeof(*szTaskFilePath);
@@ -549,95 +661,30 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
                 SetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath);
             }
             break;
-        case IDC_RD_EVERYDAY:
-            CheckDlgButton(hDlg, IDC_RD_EVERYDAY, TRUE);
-
-            CheckDlgButton(hDlg, IDC_CK_SUNDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_MONDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_TUESDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_THURSDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_FRIDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_SATURDAY, TRUE);
-
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), FALSE);
-            break;
-        case IDC_RD_WORKINGDAY:
-            CheckDlgButton(hDlg, IDC_RD_WORKINGDAY, TRUE);
-
-            CheckDlgButton(hDlg, IDC_CK_SUNDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_MONDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_TUESDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_THURSDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_FRIDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_SATURDAY, FALSE);
-
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), TRUE);
-            break;
-        case IDC_RD_WEEKEND:
-            CheckDlgButton(hDlg, IDC_RD_WEEKEND, TRUE);
-
-            CheckDlgButton(hDlg, IDC_CK_SUNDAY, TRUE);
-            CheckDlgButton(hDlg, IDC_CK_MONDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_TUESDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_THURSDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_FRIDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_SATURDAY, TRUE);
-
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), FALSE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), FALSE);
-            break;
-        case IDC_RD_CUST:
-            CheckDlgButton(hDlg, IDC_RD_CUST, TRUE);
-
-            CheckDlgButton(hDlg, IDC_CK_SUNDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_MONDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_TUESDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_WEDNESDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_THURSDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_FRIDAY, FALSE);
-            CheckDlgButton(hDlg, IDC_CK_SATURDAY, FALSE);
-
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SUNDAY), TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_MONDAY), TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_TUESDAY), TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_WEDNESDAY), TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_THURSDAY), TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_FRIDAY), TRUE);
-            EnableWindow(GetDlgItem(hDlg, IDC_CK_SATURDAY), TRUE);
-            break;
         case IDOK:
             GetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath, MAX_PATH);
             if (0 == wcscmp(szTaskFilePath, L""))
             {
-                MessageBoxW(hDlg, L"请选择要执行的程序！", L"提示", MB_OK);
+                MessageBoxW(NULL, L"请选择要执行的程序！", L"提示", MB_OK);
                 break;
             }
-            CfgReadWrite(hDlg, szCfgPath, WBTOUTF8);
             SetTimer(hDlg, TIMER_SHOWWINDOW, 1, SetTimerShowWindow);
+            nid.cbSize = sizeof(NOTIFYICONDATA);
+            nid.hWnd = hDlg;
+            nid.uID = IDI_ICON;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            nid.uCallbackMessage = WM_SHOWTASK;
+            nid.hIcon = LoadIconW(hIns, MAKEINTRESOURCE(IDI_ICON));
+            wcscpy_s(nid.szTip, fileName);
+            Shell_NotifyIcon(NIM_ADD, &nid);
+            CfgReadWrite(hDlg, szCfgPath, WBTOUTF8);
             // 设置定时器(每1秒钟触发)
-            SetTimer(hDlg, TIMER_TASK, 1000, TimerProc);
+            SetTimer(hDlg, TIMER_TASK, SECOND, TimerProc);
             break;
         case IDCANCEL:
+            // 在托盘中删除图标
+            Shell_NotifyIcon(NIM_DELETE, &nid);
+            DestroyMenu(hMenu);
             DestroyWindow(hDlg);
             break;
         default:
@@ -706,6 +753,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     if (!hWnd)
     {
+        // 在托盘中删除图标
+        Shell_NotifyIcon(NIM_DELETE, &nid);
         return FALSE;
     }
 
