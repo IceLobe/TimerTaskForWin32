@@ -19,9 +19,10 @@
 #endif
 #endif
 
+#define null L""
 #define MAX_WCHAR 0x200
-#define RBTOUTF8 L"r, ccs=utf-8"
-#define WBTOUTF8 L"w, ccs=utf-8"
+#define READTOUTF8 L"r, ccs=utf-8"
+#define WRITETOUTF8 L"w, ccs=utf-8"
 #define TIMER_TASK 2001
 #define TIMER_SHOWWINDOW 2002
 #define WM_SHOWTASK 0x0401
@@ -52,7 +53,7 @@ const unsigned int Second = 1000;
 SYSTEMTIME st;
 
 // 文件选择对话框
-OPENFILENAME ofn = { 0 };
+OPENFILENAMEW ofn = { 0 };
 
 // 实例句柄
 HINSTANCE hIns = NULL;
@@ -61,7 +62,9 @@ HINSTANCE hIns = NULL;
 HMENU hMenu = NULL;
 
 // 托盘图标
-NOTIFYICONDATA nid;
+NOTIFYICONDATAW nid;
+
+BOOL flag = FALSE;
 
 void CfgTimeToSystemTime(HWND hDlg, int nIDDlgItem, wchar_t* wstr);
 void CkCheckToCfg(HWND hDlg, int nIDDlgItem, wchar_t*& rewstr, int rewLen = 20);
@@ -196,20 +199,20 @@ void CALLBACK TimerProc(HWND hDlg, UINT uMsg, UINT_PTR nIDEvent, DWORD dwTime)
     _end = mktime(&_etm);
 
     //查找进程
-    PROCESSENTRY32 ps;
+    PROCESSENTRY32W ps;
     HANDLE handle;
-    ps.dwSize = sizeof(PROCESSENTRY32);
+    ps.dwSize = sizeof(PROCESSENTRY32W);
     // 遍历进程 
     handle = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (handle == INVALID_HANDLE_VALUE)
         return;
-    if (Process32First(handle, &ps))
+    if (Process32FirstW(handle, &ps))
     {
         wchar_t* szExeFile = new wchar_t[_MAX_FNAME];
         _wsplitpath_s(szTaskFilePath, NULL, NULL, NULL, NULL, szExeFile, _MAX_FNAME, NULL, NULL);
         wcscat_s(szExeFile, _MAX_FNAME, L".exe");
         //遍历进程快照
-        while (Process32Next(handle, &ps))
+        while (Process32NextW(handle, &ps))
         {
             if (0 == wcscmp(ps.szExeFile, szExeFile))
             {
@@ -401,7 +404,7 @@ void ParseCfg(HWND hDlg, size_t index, const wchar_t* szCfgContent)
     }
     if (0 == wcscmp(str, L"="))
     {
-        wcscpy_s(str, L"");
+        wcscpy_s(str, null);
     }
     else
     {
@@ -463,7 +466,7 @@ BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode)
         {
             // 配置文件内容
             wchar_t szCfgContent[MAX_WCHAR] = { 0 };
-            if (0 == wcscmp(_Mode, RBTOUTF8))
+            if (0 == wcscmp(_Mode, READTOUTF8))
             {
                 //获取文件大小
                 fseek(fp, 0, SEEK_END);
@@ -485,26 +488,35 @@ BOOL CfgReadWrite(HWND hDlg, wchar_t const* _FileName, wchar_t const* _Mode)
                 }
                 SetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath);
 
-                wchar_t lpszText[MAXCHAR] = L"确定执行:";
-                wcscat_s(lpszText, szTaskFilePath);
-                int uType = MessageBoxW(NULL, lpszText, L"提示", MB_YESNO);
-                if (IDYES == uType)
+                if (!flag)
+                {
+                    wchar_t lpszText[MAX_PATH] = L"确定执行:";
+                    wcscat_s(lpszText, szTaskFilePath);
+                    int uType = MessageBoxW(NULL, lpszText, L"提示", MB_YESNO);
+                    if (IDYES == uType)
+                    {
+                        EnableWindow(GetDlgItem(hDlg, IDC_BTN_SELECT), FALSE);
+                        SendMessageW(hDlg, WM_COMMAND, IDOK, 0);
+                    }
+                    else
+                    {
+                        SetDlgItemTextW(hDlg, IDC_TXT_PATH, null);
+                        wcscpy_s(szTaskFilePath, null);
+                    }
+                }
+                else
                 {
                     EnableWindow(GetDlgItem(hDlg, IDC_BTN_SELECT), FALSE);
                     SendMessageW(hDlg, WM_COMMAND, IDOK, 0);
                 }
-                else
-                {
-                    SetDlgItemTextW(hDlg, IDC_TXT_PATH, L"");
-                }
             }
-            if (0 == wcscmp(_Mode, WBTOUTF8))
+            if (0 == wcscmp(_Mode, WRITETOUTF8))
             {
                 wcscpy_s(szCfgContent, L"TaskPath=");
                 wcscat_s(szCfgContent, szTaskFilePath);
                 int len = sizeof(int) + 1;
                 wchar_t* wstr = new wchar_t[len];
-                wcscpy_s(wstr, len, L"");
+                wcscpy_s(wstr, len, null);
                 wcscat_s(szCfgContent, L"\nRadioButton=");
                 if (BST_CHECKED == SendMessageW(GetDlgItem(hDlg, IDC_RD_EVERYDAY), BM_GETCHECK, 0, 0))
                 {
@@ -601,7 +613,7 @@ void InitDialog(HWND hDlg)
     wcscpy_s(szCfgPath, wcstok_s(szCfgPath, L".", &tmp));
     wcscat_s(szCfgPath, L".cfg");
 
-    CfgReadWrite(hDlg, szCfgPath, RBTOUTF8);
+    CfgReadWrite(hDlg, szCfgPath, READTOUTF8);
 }
 
 /// <summary>
@@ -647,15 +659,16 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
         switch (wParam)
         {
         case IDC_BTN_SELECT:
-            ofn = { NULL };
+            RtlZeroMemory(&ofn, sizeof(ofn));
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hDlg;
             ofn.lpstrFilter = L"应用程序\0*.exe\0";
             ofn.lpstrInitialDir = L"D:\\Program Files\\";
             ofn.lpstrFile = szTaskFilePath;
             ofn.nMaxFile = sizeof(szTaskFilePath) / sizeof(*szTaskFilePath);
+            ofn.lpstrDefExt = L"exe";
             ofn.nFilterIndex = 0;
-            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_EXPLORER;
+            ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;// | OFN_EXPLORER;
             if (GetOpenFileNameW(&ofn))
             {
                 SetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath);
@@ -663,27 +676,27 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lPara
             break;
         case IDOK:
             GetDlgItemTextW(hDlg, IDC_TXT_PATH, szTaskFilePath, MAX_PATH);
-            if (0 == wcscmp(szTaskFilePath, L""))
+            if (0 == wcscmp(szTaskFilePath, null))
             {
                 MessageBoxW(NULL, L"请选择要执行的程序！", L"提示", MB_OK);
                 break;
             }
             SetTimer(hDlg, TIMER_SHOWWINDOW, 1, SetTimerShowWindow);
-            nid.cbSize = sizeof(NOTIFYICONDATA);
+            nid.cbSize = sizeof(NOTIFYICONDATAW);
             nid.hWnd = hDlg;
             nid.uID = IDI_ICON;
             nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
             nid.uCallbackMessage = WM_SHOWTASK;
-            nid.hIcon = LoadIconW(hIns, MAKEINTRESOURCE(IDI_ICON));
+            nid.hIcon = LoadIconW(hIns, MAKEINTRESOURCEW(IDI_ICON));
             wcscpy_s(nid.szTip, fileName);
-            Shell_NotifyIcon(NIM_ADD, &nid);
-            CfgReadWrite(hDlg, szCfgPath, WBTOUTF8);
+            Shell_NotifyIconW(NIM_ADD, &nid);
+            CfgReadWrite(hDlg, szCfgPath, WRITETOUTF8);
             // 设置定时器(每1秒钟触发)
             SetTimer(hDlg, TIMER_TASK, SECOND, TimerProc);
             break;
         case IDCANCEL:
             // 在托盘中删除图标
-            Shell_NotifyIcon(NIM_DELETE, &nid);
+            Shell_NotifyIconW(NIM_DELETE, &nid);
             DestroyMenu(hMenu);
             DestroyWindow(hDlg);
             break;
@@ -735,7 +748,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     {
         return 0;
     }
-
+    if (0 == wcscmp(lpCmdLine, L"-no"))
+    {
+        flag = TRUE;
+    }
     WNDCLASSW wc;
     // 获取对话框的类信息
     GetClassInfoW(hInstance, L"#32770", &wc);
@@ -754,7 +770,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     if (!hWnd)
     {
         // 在托盘中删除图标
-        Shell_NotifyIcon(NIM_DELETE, &nid);
+        Shell_NotifyIconW(NIM_DELETE, &nid);
         return FALSE;
     }
 
